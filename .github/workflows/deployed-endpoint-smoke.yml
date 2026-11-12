@@ -1,0 +1,77 @@
+name: Deployed endpoint smoke
+
+# WHAT THIS WATCHES: the LIVE hosted /mcp endpoint, not the code in this repo.
+# It runs two MCP handshakes and one refused call against the running service
+# and fails if the service no longer answers as the pinned release does. See
+# scripts/smoke-deployed-endpoint.mjs for the exchanges and the assertions, and
+# PIN.md for what is pinned.
+#
+# WHY IT IS NOT A push/pull_request CHECK:
+#   1. The state it measures is orthogonal to the diff, and the deploy of a
+#      merged commit has not happened yet when that commit's checks run. At a
+#      pin-move PR's head the smoke expects the new version, so it is green only
+#      after the merge's deploy (PIN.md, "Moving the pin").
+#   2. The breakage it catches is drift on the host with no commit behind it:
+#      a dashboard variable changed, a different branch or build deployed, the
+#      domain unrouted.
+#   3. Its red must mean "the deployed endpoint is broken" and nothing else,
+#      which is also why the script retries transport-level flakes before
+#      reporting failure.
+
+on:
+  schedule:
+    # 06:29 UTC daily. Daily bounds the time to discovery at about a day. The
+    # offset minute (not :00) because GitHub delays or drops scheduled runs
+    # that pile up at the top of the hour.
+    #
+    # KNOWN LIMIT: GitHub disables scheduled workflows in a public repository
+    # after 60 days without repository activity, and they start disabled in a
+    # fork. Re-enable with:
+    #   gh workflow enable deployed-endpoint-smoke.yml -R npstorey/ckan-mcp-server
+    - cron: '29 6 * * *'
+
+  # Manual runs: for checking a suspected outage on demand, and for probing the
+  # Render-issued hostname or another deployment via the input below.
+  workflow_dispatch:
+    inputs:
+      endpoint:
+        description: 'MCP endpoint URL to probe (blank = https://ckan-mcp.civicaitools.org/mcp)'
+        required: false
+        default: ''
+
+# No push:, no pull_request:. See the rationale above before adding either.
+
+# Credential-free by construction: this workflow reads no secret and needs none.
+# The server requires no authentication. Only first-party actions are used, and
+# the default GITHUB_TOKEN is read-only.
+permissions:
+  contents: read
+
+# One at a time, so the log is unambiguous about which run saw what.
+concurrency:
+  group: deployed-endpoint-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    # Seven requests. If they have not finished in five minutes something is
+    # wrong in a way the script's own 30s-per-request timeouts did not catch.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The service's NODE_VERSION (render.yaml). The upstream ships no
+          # .node-version, so the version is named here. No `cache: npm`: this
+          # job installs nothing.
+          node-version: '22'
+
+      # No install step. The script has zero dependencies and uses global fetch.
+      # A registry outage or a broken build must never turn this monitor red.
+      - name: MCP handshakes against the deployed endpoint
+        env:
+          # Empty on scheduled runs, so the script falls back to its default.
+          SMOKE_MCP_URL: ${{ inputs.endpoint }}
+        run: node scripts/smoke-deployed-endpoint.mjs

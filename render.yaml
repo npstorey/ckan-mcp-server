@@ -1,0 +1,71 @@
+# Mirror of the Render dashboard configuration for this fork's web service
+# `ckan-mcp-server`, as the service was created on 2026-11-12 (first deploy at
+# 12:28 as the dashboard showed it; time zone not recorded).
+#
+# DOCUMENTATION-AS-CODE, NOT LIVE CONFIG: Render does not automatically apply
+# this file to an existing dashboard-configured service. Per Render's Blueprint
+# docs, an existing service adopts a render.yaml only when it is explicitly
+# synced as a Blueprint in the Render UI (resources are matched by `name`).
+# Until that adoption step happens, this file records the deploy configuration
+# in-repo so it is reviewable, diffable, and survives the dashboard.
+#
+# Render-issued hostname: ckan-mcp-server.onrender.com. Custom domain below.
+#
+# Every variable here is non-secret, so values are written out. The service has
+# no secret. What the pin is, and why each value is what it is: PIN.md.
+#
+# Adapted from npstorey/socrata-mcp-server's render.yaml.
+
+services:
+  - type: web
+    # DEPLOYMENT VALUE: `name` and `domains` are this deployment's. A copy of
+    # this file used as a Blueprint elsewhere sets its own.
+    name: ckan-mcp-server
+    runtime: node
+    plan: starter
+    region: oregon
+    # The pinned upstream release plus this fork's own files (PIN.md). The
+    # fork's default branch; protected against force-push and deletion.
+    branch: pin
+    # Root Directory: unset in the dashboard (repo root); rootDir omitted.
+    # The service's build command. The dashboard's form pre-fills
+    # `npm install && npm run build`; the first deploy ran that, and the
+    # dashboard was then corrected to this: install from the lockfile only.
+    buildCommand: npm ci && npm run build
+    # Pre-deploy command: unset in the dashboard.
+    # Withholds the server's per-request log lines from the host's log stream
+    # (scripts/start-hosted.mjs; PIN.md, "Logging").
+    # The dashboard still reads `npm start` until it is edited to this command (gate G1).
+    startCommand: node scripts/start-hosted.mjs
+    # Health check path: left empty in the dashboard. The server has no GET
+    # route but the OAuth discovery path, which answers 404. The scheduled
+    # smoke (.github/workflows/deployed-endpoint-smoke.yml) watches the service.
+    autoDeploy: true # dashboard setting: "On Commit" (pin)
+    domains:
+      - ckan-mcp.civicaitools.org
+    envVars:
+      # REQUIRED VALUE: 22. The upstream ships no .node-version and declares
+      # `engines.node: ">=18.17.0"`; the service runs on the 22 line (the first
+      # deploy's log showed Node 22.23.5), and the smoke workflow runs on 22.
+      # This variable outranks a committed version file in Render's order, so
+      # it is the control.
+      - key: NODE_VERSION
+        value: "22"
+      # Selects the Streamable HTTP transport (src/index.ts); the default is stdio.
+      - key: TRANSPORT
+        value: http
+      # The bind address. The server binds 127.0.0.1 unless this is set
+      # (src/transport/http.ts), which the host cannot route to.
+      - key: CKAN_HTTP_HOST
+        value: 0.0.0.0
+      # The domain allowlist: the only CKAN portal the server will query. The
+      # HTTP transport refuses to start without it unless CKAN_HTTP_ALLOW_ALL
+      # is "true". The smoke checks a portal outside it is refused.
+      - key: CKAN_ALLOWED_DOMAINS
+        value: data.boston.gov
+      # The DNS-rebinding guard's Host allowlist, beside the loopback
+      # defaults. A host not listed here is answered 403 "Invalid Host header".
+      - key: CKAN_HTTP_ALLOWED_HOSTS
+        value: ckan-mcp-server.onrender.com,ckan-mcp.civicaitools.org
+      # Not set in the dashboard: CKAN_HTTP_ALLOW_ALL, CKAN_PRIVATE_HOSTS
+      # (new in 0.4.139; it stays unset here), PORT.
