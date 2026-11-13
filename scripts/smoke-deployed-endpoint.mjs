@@ -62,9 +62,9 @@
 const DEFAULT_ENDPOINT = 'https://ckan-mcp.civicaitools.org/mcp';
 
 /**
- * LATEST_PROTOCOL_VERSION in @modelcontextprotocol/sdk 1.27.1, the version the
- * pinned release's package-lock.json installs (dist/esm/types.js): what a
- * current client asks for. Exchange 2 negotiates it.
+ * LATEST_PROTOCOL_VERSION in @modelcontextprotocol/sdk 1.32.2, the version this
+ * fork's refreshed package-lock.json installs (dist/esm/types.js; see PIN.md):
+ * what a current client asks for. Exchange 2 negotiates it.
  */
 const PROTOCOL_VERSION = '2025-11-25';
 
@@ -350,7 +350,7 @@ async function attemptExchange(exchange) {
   check(
     answered === exchange.requested,
     `${label('initialize')}: sent protocolVersion ${exchange.requested}, got ${JSON.stringify(answered)} back. ` +
-      `SDK 1.27.1 supports ${exchange.requested} and agrees to a supported requested revision, ` +
+      `The SDK in this fork's package-lock.json supports ${exchange.requested} and agrees to a supported requested revision, ` +
       'so the deployed SDK is not the pinned one or no longer supports it.',
     init.round
   );
