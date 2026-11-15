@@ -8,7 +8,10 @@ deploys from. It holds one upstream release, with the runtime entries of its loc
 - `scripts/start-hosted.mjs` and its test `scripts/start-hosted.test.mjs`, the service's start command (see
   [Logging](#logging));
 - `scripts/smoke-deployed-endpoint.mjs` and `.github/workflows/deployed-endpoint-smoke.yml`, the daily check on the
-  deployed endpoint (see [The smoke](#the-smoke)).
+  deployed endpoint (see [The smoke](#the-smoke));
+- `scripts/pinned-identity.json`, `scripts/mcp-tool-schema-sha256.mjs`, `scripts/pinned-identity.test.mjs` and
+  `.github/workflows/pinned-identity.yml`, the check that the built server still reports the pinned values (see
+  [The pinned-values guard](#the-pinned-values-guard)).
 
 The six workflow files the upstream ships are removed (see [Workflows](#workflows)). One upstream file is edited:
 `package-lock.json`, whose runtime entries are refreshed; `package.json` is unchanged. No other upstream file is
@@ -52,6 +55,11 @@ command changes to this file at the deploy gate that follows this PR.
 
 `CKAN_HTTP_ALLOW_ALL`, `CKAN_PRIVATE_HOSTS` and `PORT` are not set. `CKAN_PRIVATE_HOSTS` is new in 0.4.139 (absent at
 `v0.4.138`); it lets listed hosts resolve to private addresses, and it stays unset on this deployment.
+
+**The cache.** The server keeps CKAN answers in its process's memory (`src/utils/cache.ts:118-119`, `:201`), on unless
+`CKAN_CACHE_ENABLED` is `false`, which none of the five variables sets (`:56-58`): a DataStore answer for 60 s, a
+status answer for 3600 s and any other answer for 300 s (`:23-46`, `:59`), under a key that is a SHA-1 digest of the
+portal, the action and the parameters (`:103-111`), so the answers are gone at a restart.
 
 **The DNS-rebinding guard, as seen on the deployment.** With the domain routed by the host but not yet in
 `CKAN_HTTP_ALLOWED_HOSTS`, a request to it was answered `403` with
@@ -214,7 +222,8 @@ The upstream's six workflow files (`claude-code-review.yml`, `claude.yml`, `depl
 them commit to the default branch on a schedule (`update-npm-downloads.yml:4-5`, `:26`; `update-telemetry.yml:4-6`,
 `:47` at `d504359`); `pin` is this fork's default branch and the service deploys on every commit to it. GitHub registers
 a fork's workflows only when Actions are acknowledged in its Actions tab, and that registers every workflow file on the
-branch at once. So the six are removed before Actions are enabled, and `.github/workflows/` holds one file, the smoke's.
+branch at once. So the six are removed before Actions are enabled. `.github/workflows/` holds two files, this fork's
+own: the smoke's (`deployed-endpoint-smoke.yml`) and the pinned-values guard's (`pinned-identity.yml`).
 
 ## The smoke
 
@@ -247,9 +256,10 @@ branch of this fork.
 
 The pin moves to the newest upstream release after that release's advisories (the upstream's, and `npm audit` over its
 lockfile) are read. The move is a PR on `pin` that merges the upstream tag and touches only upstream files (with
-`package-lock.json` refreshed as below), plus this file and the smoke's pinned version (`EXPECTED_SERVER_VERSION` in
-`scripts/smoke-deployed-endpoint.mjs`, and `EXPECTED_TOOL_COUNT` beside it when a release changes the tool count). The
-fork merges by merge commit only.
+`package-lock.json` refreshed as below), plus this file, the smoke's pinned version (`EXPECTED_SERVER_VERSION` in
+`scripts/smoke-deployed-endpoint.mjs`, and `EXPECTED_TOOL_COUNT` beside it when a release changes the tool count) and
+`scripts/pinned-identity.json`. Edit `scripts/pinned-identity.json` only after the site accepts the new values (see
+"The staged order" below). The fork merges by merge commit only.
 
 **The lockfile at a pin move.** This fork's `package-lock.json` differs from the upstream's, so merging an upstream tag
 conflicts in `package-lock.json`. The conflict is resolved by this step, not by hand: take the upstream's lockfile from
@@ -273,20 +283,53 @@ run: started over HTTP with `CKAN_HTTP_ALLOWED_HOSTS` set as on the host, a `too
 list). After the deploy, the smoke against the domain shows the listed host is still admitted. The results are recorded
 on the pull request.
 
-**Before the merge, check the PR's head tree holds no workflow but the smoke's:** a merge of an upstream tag can bring
-a removed workflow back or add a new one.
+**Before the merge, check the PR's head tree holds no workflow but the smoke's and the pinned-values guard's:** a merge
+of an upstream tag can bring a removed workflow back or add a new one.
 
 ```
 git ls-tree --name-only <head-commit> .github/workflows/
-# expected: .github/workflows/deployed-endpoint-smoke.yml, and nothing else
+# expected: .github/workflows/deployed-endpoint-smoke.yml
+#           .github/workflows/pinned-identity.yml
+# and nothing else
 ```
 
-**The staged order.** A site that uses this deployment may pin the values the server reports (its name, its version,
-its tools' argument schemas). Where one does, it accepts the new values first; then the pin-move PR merges. The smoke at a pin-move PR's head expects the new version, so it is green
-only after the merge's deploy.
+**The staged order.** A site that calls this deployment may pin the values the server reports (its name, its version,
+its tools' argument schemas). The pinned-values guard's failure ends with this order, in these words:
 
-## Not here yet
+> A site that calls this deployment may pin these values. Where one does, the change is staged: the site accepts the new values first (a pack listing both pins, the site deployed); then scripts/pinned-identity.json is edited to the new values and the change merges (PIN.md, "The staged order").
 
-The pinned-values guard (a committed file of the reported name, version and tool-schema hashes, with its test) lands in
-a later PR. Until then, the smoke's `serverInfo` and tool-count checks are the only check on what the deployment
-reports.
+So at the head of a pin-move PR that moves a pinned value, the guard's test fails until the PR edits
+`scripts/pinned-identity.json`, and that edit is made only once the site accepts the new values. The smoke at a
+pin-move PR's head expects the new version, so it is green only after the merge's deploy.
+
+## The pinned-values guard
+
+A site that calls this deployment may pin what the server reports. Four files hold the built server to those values:
+
+- `scripts/pinned-identity.json`: the server's `serverInfo` name and version and, for each tool `tools/list` lists (20,
+  in list order), its `mcpToolSchemaSha256`; and what the values were captured from (the commit, the date, and how: a
+  stdio session with the built server in an empty environment).
+- `scripts/mcp-tool-schema-sha256.mjs`: the hash, a copy with no dependency of the one in
+  `@typedstandards/civic-typed-router` 0.11.0. It is the lowercase hex SHA-256 of the RFC 8785 canonical JSON of the
+  tool's `{ name, inputSchema }`, with `title` and `description` removed from every schema object the walk reaches
+  (ADR-0039 in `npstorey/civic-ai-tools`). A reworded description does not move a hash; a changed argument name, type,
+  enumeration, `required` or `additionalProperties` does.
+- `scripts/pinned-identity.test.mjs` (`node --test`), in two layers. The pure layer needs no build: it holds the hash
+  copy to ADR-0039's four worked values and the comparison to its decoys. The live layer starts `node dist/index.js`
+  over stdio with an empty environment, sends `initialize`, `notifications/initialized` and `tools/list` (following any
+  cursor), and compares the answers with the file. Without `dist/index.js` it fails, naming the missing build; it never
+  skips, so a run that lost its build step cannot pass on the pure layer alone.
+- `.github/workflows/pinned-identity.yml`: its triggers are a pull request to `pin` and manual dispatch. On Node 22 it
+  runs `npm ci`, `npm run build`, then `node --test scripts/pinned-identity.test.mjs scripts/start-hosted.test.mjs`. It
+  reads no secret: `permissions: contents: read`, first-party actions only.
+
+**What a red means.** The built server reports a value the file does not hold, and the failure names each one:
+`serverName` or `serverVersion` changed, or `tools.<name>` with its hash moved, listed and not pinned, or pinned and not
+listed. The change then takes the staged order ("The staged order", under [Moving the pin](#moving-the-pin)). A red
+that names `dist/index.js` means the run had no build, not that a value moved.
+
+**What it does not cover.** The deployed endpoint (the smoke reads that); a tool's description, title or annotations;
+a change in behaviour that leaves the schemas, the name and the version as they were.
+
+Run it after `npm ci` and `npm run build` with `node --test scripts/pinned-identity.test.mjs`; the pure layer alone,
+with no build, with `node --test --test-name-pattern="pure layer" scripts/pinned-identity.test.mjs`.

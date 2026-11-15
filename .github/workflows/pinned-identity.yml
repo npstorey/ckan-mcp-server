@@ -1,0 +1,48 @@
+name: Pinned identity
+
+# WHAT THIS CHECKS: the code in this repository, not the deployed endpoint. It
+# builds the server, starts it over stdio, and fails if it no longer reports the
+# values committed in scripts/pinned-identity.json: its serverInfo name and
+# version, and each listed tool's argument-schema hash. A site that calls this
+# deployment may pin those values, so a change that moves one is staged (PIN.md,
+# "The staged order"): the site accepts the new values first, then the file is
+# edited and the change merges. See scripts/pinned-identity.test.mjs.
+#
+# WHY IT IS A pull_request CHECK, unlike the smoke: what it measures is the diff
+# itself. The service deploys `pin` on every commit, so the change has to be
+# caught before the merge.
+
+on:
+  pull_request:
+    branches: [pin]
+  workflow_dispatch:
+
+# Credential-free by construction: this workflow reads no secret and needs none.
+# Only first-party actions are used, and the default GITHUB_TOKEN is read-only.
+permissions:
+  contents: read
+
+jobs:
+  pinned-identity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          # The service's NODE_VERSION (render.yaml).
+          node-version: '22'
+
+      # The service's build command, `npm ci && npm run build` (PIN.md, "The service").
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # The live layer starts dist/index.js; without the build it fails, never skips.
+      - name: Pinned-values guard and the start file's test
+        run: node --test scripts/pinned-identity.test.mjs scripts/start-hosted.test.mjs

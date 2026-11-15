@@ -1,0 +1,33 @@
+{
+  "about": "The values this server reports, which a site that calls the deployment may pin: serverInfo name and version, and mcpToolSchemaSha256 (scripts/mcp-tool-schema-sha256.mjs) of each tool tools/list lists, in list order. scripts/pinned-identity.test.mjs holds the built server to them. Edit this file only after the site accepts the new values (PIN.md, \"The staged order\").",
+  "capturedFrom": {
+    "repository": "https://github.com/npstorey/ckan-mcp-server",
+    "commit": "7b0ac8a1a4aaa550786a2ff96b326307345a7a89",
+    "date": "2026-11-13",
+    "how": "A fresh clone at the commit, Node v22.23.4: npm ci --ignore-scripts, npm run build, then node dist/index.js over stdio with an empty environment: initialize (protocol 2025-06-18), notifications/initialized, tools/list (one page, 20 tools). The same initialize and tools/list are in npstorey/civic-ai-tools at 1d97e0e64ba3297d2897301c12c2406589225e3e, packages/civic-typed-router/src/__fixtures__/ckan-tools.json."
+  },
+  "serverName": "ckan-mcp-server",
+  "serverVersion": "0.4.139",
+  "tools": {
+    "ckan_package_search": "f4a766bc17325feb4099b790cd849e126a537af50fbca68f458cbb8549b10145",
+    "ckan_find_relevant_datasets": "41e36171a4f110c1d89964335e86fa2dd32e6cc92a2935f506fd0c0d188eb028",
+    "ckan_package_show": "ff022c49c7263ba72ab649568e78ceac64de909e5bfeb930ef63b0a11005c3c5",
+    "ckan_list_resources": "0a5048a337b3e239e0bf71e84aab593712f181224aef0c656bca66fe343c5dbf",
+    "ckan_organization_list": "caee8789a2f58d9736d115b9f8ef49810b212c66a2140391e0c6f79744e1d355",
+    "ckan_organization_show": "0a1f28426454d6a2c02c01d3f09792a8a3318306a7eca56fb1b2b7af25e2cb58",
+    "ckan_organization_search": "8232de131842ecc8f49b34c76cc3d0ab7e5c7d11aa317cf776805439043d755f",
+    "ckan_datastore_search": "a89056ee57437ebafb4bdb3d7aaaa83fc8829f3279d3970b2a78e40f9f3a1701",
+    "ckan_datastore_search_sql": "ee15e13fa342ca280d51dbaf7a9db8a48fef6d0a4bc2e008e24e414cc4d30fe7",
+    "ckan_status_show": "2764fe0cebbead4f1fa33aee855913ff1e97cc3e39ff93fca5ff92cff99b1940",
+    "ckan_tag_list": "40f472d7fa348a063fc18aa5695f338a6fb2c6d4519447de7d8712a904877c74",
+    "ckan_group_list": "ec28a2956d250b3c0891b056eedc305944cc80d6c3c4a5cb35efa8a1dd4a4624",
+    "ckan_group_show": "3bf98a6b34571649a5e9fa44e31b3e19c647a1490a25bc58a9d01f0aec637834",
+    "ckan_group_search": "e999e1358ede4937c840253f8b26646e3a7f92930166a681807ce89a29fda34e",
+    "ckan_get_mqa_quality": "7b78b8ff270e18cacf1eac8b3573d4bd1e5ae2c5ac3cbb24fc4057111b33557b",
+    "ckan_get_mqa_quality_details": "f91cf74ce350868dd2c0bde399baf5a1696d13b65f8959ef0f1c58c988fb1fbb",
+    "ckan_analyze_datasets": "eec2111697940f1f9e6b9f6d941d7387e31d42ce96ebdce5cbba9d7169cd8724",
+    "ckan_catalog_stats": "a02126e79ba1df6c9e2639086e39604f8769f52f13581c1b84124bd6daa94414",
+    "sparql_query": "0d1402a9d1fb53d26216c8e647726f85a5953c467617368c8bd336fdad8857d5",
+    "ckan_find_portals": "7afe8ceaab1c7f6ca3b997b21ac4603d96e8b3074d6b0dc5e870beedc8281262"
+  }
+}
