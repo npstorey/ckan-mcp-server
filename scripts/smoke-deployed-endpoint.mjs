@@ -3,15 +3,24 @@
  * Deployed-endpoint smoke: does the LIVE hosted /mcp of this fork's deployment
  * still answer as the pinned server does?
  *
- * Two exchanges, each initialize → tools/list → tools/call ckan_status_show
- * against https://data.boston.gov (see EXCHANGES), then one refused call:
+ * First a pre-flight, before any request (preflight()): the list file the
+ * deployment reads, scripts/allowed-domains.txt, must list every portal this
+ * script samples and must not list the refused portal's host, and the server's
+ * own portal table (src/portals.json) must not send a listed host to the refused
+ * portal. When it fails, nothing is sent and the smoke is red.
+ *
+ * Then two exchanges, each initialize → tools/list → tools/call ckan_status_show
+ * against https://data.boston.gov (see CHECKS), then one refused call, then the
+ * sample:
  *   1. the civic-ai-tools website's handshake: initialize at APP_PROTOCOL_VERSION
  *      and no MCP-Protocol-Version header on any request;
  *   2. a current client: initialize at PROTOCOL_VERSION, with
  *      MCP-Protocol-Version on every request;
- *   3. the refused call, in exchange 2's form: tools/call ckan_status_show
+ *   3. the refused call (F1), in exchange 2's form: tools/call ckan_status_show
  *      against a portal outside the deployment's CKAN_ALLOWED_DOMAINS must come
- *      back as a tool error naming CKAN_ALLOWED_DOMAINS.
+ *      back as a tool error naming CKAN_ALLOWED_DOMAINS;
+ *   4. the sample (F2), in exchange 2's form: tools/call ckan_status_show against
+ *      each of SAMPLED_PORTALS must not come back refused by the allowlist.
  *
  * WHAT IT CHECKS, and why each:
  *   - initialize answers the requested protocolVersion, and serverInfo is the
@@ -30,6 +39,13 @@
  *   - the refused call proves the domain allowlist is set on the service. With
  *     the allowlist unset the HTTP transport refuses to start unless
  *     CKAN_HTTP_ALLOW_ALL=true, and then this call would succeed.
+ *   - the sample checks that the service admits listed portals, not only
+ *     data.boston.gov: each sampled portal is listed (the pre-flight checks that),
+ *     so an answer carrying REFUSAL_MARKER means the service refused a listed
+ *     portal, either by its own host or by the host it redirected to (the
+ *     server re-checks every redirect hop against the list). That is red. A
+ *     portal's own failure (down, slow, not answering as CKAN) is reported in
+ *     the log and is not red: it says nothing about the allowlist.
  *
  * THE SERVER IS STATELESS (src/transport/http.ts: `sessionIdGenerator:
  * undefined`, `enableJsonResponse: true`, a new server per request). There is no
@@ -46,6 +62,7 @@
  *
  * Usage:
  *   node scripts/smoke-deployed-endpoint.mjs
+ *   node --test scripts/smoke-deployed-endpoint.test.mjs   (against a stand-in; no network)
  *   SMOKE_MCP_URL=https://ckan-mcp-server.onrender.com/mcp node scripts/smoke-deployed-endpoint.mjs
  *
  * Exit codes: 0 = every check passes. 1 = any one fails, or the endpoint could
@@ -57,6 +74,10 @@
  * Adapted from npstorey/socrata-mcp-server's scripts/smoke-deployed-endpoint.mjs
  * (structure, retries, reporting).
  */
+
+import { readFileSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { ALLOWED_DOMAINS_NAME, ALLOWED_DOMAINS_PATH, parseAllowedDomains } from './allowed-domains.mjs';
 
 /** The deployment. Override with SMOKE_MCP_URL to probe another one. */
 const DEFAULT_ENDPOINT = 'https://ckan-mcp.civicaitools.org/mcp';
@@ -85,11 +106,35 @@ const EXPECTED_SERVER_VERSION = '0.4.139';
 /** Tools the pinned release registers: 19 `ckan_*` tools and `sparql_query`. */
 const EXPECTED_TOOL_COUNT = 20;
 
-/** The portal the deployment allows (CKAN_ALLOWED_DOMAINS=data.boston.gov). */
+/**
+ * The portal both exchanges call; it must answer. A listed portal (directory id
+ * `data.boston.gov`, US), and the one the deployment allowed before the list file.
+ */
 const ALLOWED_PORTAL = 'https://data.boston.gov';
 
-/** A real CKAN portal the deployment does not allow. */
-const REFUSED_PORTAL = 'https://www.dati.gov.it/opendata';
+/**
+ * F2's fixed sample: listed portals from four other countries, each named by its
+ * row `id` in the website's CKAN directory and called with the row's `url`. Each
+ * is also in the pinned server's own portal table (src/portals.json), which
+ * resolves its host to its CKAN API on the same host.
+ */
+export const SAMPLED_PORTALS = Object.freeze([
+  Object.freeze({ id: 'open.canada.ca', country: 'CA', url: 'https://open.canada.ca' }),
+  Object.freeze({ id: 'data.stadt-zuerich.ch', country: 'CH', url: 'https://data.stadt-zuerich.ch' }),
+  Object.freeze({ id: 'data.gov.ua', country: 'UA', url: 'https://data.gov.ua' }),
+  Object.freeze({ id: 'dati.arpae.it', country: 'IT', url: 'https://dati.arpae.it' }),
+]);
+
+/**
+ * F1's refused portal: a real CKAN portal (in the pinned server's portal table,
+ * src/portals.json) whose host is not in the list file and which no listed host
+ * reaches through that table. The pre-flight holds both. The refusal comes before
+ * any request, so the portal is never contacted.
+ */
+export const REFUSED_PORTAL = 'https://bdap-opendata.rgs.mef.gov.it/SpodCkanApi';
+
+/** The server's portal table, read by the pre-flight. */
+const PORTALS_PATH = fileURLToPath(new URL('../src/portals.json', import.meta.url));
 
 /** A line of ckan_status_show's answer (src/tools/status.ts, formatStatusMarkdown). */
 const STATUS_MARKER = '**CKAN Version**:';
@@ -98,6 +143,12 @@ const STATUS_MARKER = '**CKAN Version**:';
 const REFUSAL_MARKER = 'CKAN_ALLOWED_DOMAINS';
 
 const REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * A sampled call waits longer than the server's own 30 s portal timeout
+ * (src/utils/http.ts), so a slow portal comes back as the server's tool error,
+ * reported, rather than as this script's timeout.
+ */
+const SAMPLE_TIMEOUT_MS = 45_000;
 /** Whole-exchange attempts. Retries cover TRANSPORT flakes only — see runExchange(). */
 const MAX_ATTEMPTS = 3;
 const RETRY_BACKOFF_MS = 5_000;
@@ -161,7 +212,7 @@ function describeHeaders(headers) {
  * One HTTP POST. Returns the raw response plus timing; converts network errors
  * into a retryable SmokeFailure carrying the request that provoked them.
  */
-async function post({ headers, body, label }) {
+async function post({ headers, body, label, timeoutMs = REQUEST_TIMEOUT_MS }) {
   const started = Date.now();
   const sentDetail = [
     '  sent:',
@@ -177,7 +228,7 @@ async function post({ headers, body, label }) {
       method: 'POST',
       headers,
       body,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
       redirect: 'manual',
     });
   } catch (error) {
@@ -259,11 +310,12 @@ function requestHeaders(version) {
  * One JSON-RPC request: POST, the transport checks (retryable 5xx/429, HTTP 200),
  * then the JSON-RPC envelope (version, id, no error). Returns { round, result }.
  */
-async function rpc({ label, version, id, method, params }) {
+async function rpc({ label, version, id, method, params, timeoutMs }) {
   const round = await post({
     label,
     headers: requestHeaders(version),
     body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+    timeoutMs,
   });
   if (isRetryableStatus(round.response.status)) {
     throw new SmokeFailure(
@@ -311,7 +363,7 @@ function describeHeaderMode(version) {
 }
 
 /** tools/call ckan_status_show, as each exchange and the refused call send it. */
-function callStatusShow(label, version, id, serverUrl) {
+function callStatusShow(label, version, id, serverUrl, timeoutMs) {
   log(`→ POST tools/call ckan_status_show (server_url=${serverUrl}; ${describeHeaderMode(version)})`);
   return rpc({
     label,
@@ -319,7 +371,75 @@ function callStatusShow(label, version, id, serverUrl) {
     id,
     method: 'tools/call',
     params: { name: 'ckan_status_show', arguments: { server_url: serverUrl } },
+    timeoutMs,
   });
+}
+
+/** A URL's host as the server compares it (src/utils/http.ts, validateServerUrl); null if none. */
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The pre-flight, run before any request. Returns { problems, listed }: no
+ * problem means pass. It reads the list file the deployment reads and the
+ * server's portal table; `listPath` and `portalsPath` default to the real ones.
+ */
+export function preflight({ listPath = ALLOWED_DOMAINS_PATH, portalsPath = PORTALS_PATH } = {}) {
+  let hosts;
+  try {
+    hosts = new Set(parseAllowedDomains(readFileSync(listPath, 'utf8')));
+  } catch (error) {
+    return { problems: [`${ALLOWED_DOMAINS_NAME} could not be read: ${error.message}`], listed: 0 };
+  }
+  if (hosts.size === 0) return { problems: [`${ALLOWED_DOMAINS_NAME} holds no host`], listed: 0 };
+
+  const problems = [];
+  const refusedHost = hostOf(REFUSED_PORTAL);
+  if (hosts.has(refusedHost)) {
+    problems.push(
+      `the refused portal's host ${refusedHost} is in ${ALLOWED_DOMAINS_NAME}, so the refused call would test ` +
+        'nothing: replace REFUSED_PORTAL with a CKAN portal whose host is not listed'
+    );
+  }
+  for (const portal of [{ id: 'data.boston.gov', url: ALLOWED_PORTAL }, ...SAMPLED_PORTALS]) {
+    const host = hostOf(portal.url);
+    if (!hosts.has(host)) {
+      problems.push(
+        `the sampled portal ${portal.id} (${host}) is not in ${ALLOWED_DOMAINS_NAME}: sample a listed portal`
+      );
+    }
+  }
+
+  // The server resolves a host its portal table names (as api_url or an alias)
+  // to that entry's api_url and requests it without a second allowlist check
+  // (src/utils/http.ts, makeCkanRequest; src/utils/portal-config.ts). A listed
+  // host that the table sends to the refused host reaches the refused portal.
+  let portals;
+  try {
+    portals = JSON.parse(readFileSync(portalsPath, 'utf8')).portals;
+    if (!Array.isArray(portals)) throw new Error('it holds no "portals" array');
+  } catch (error) {
+    problems.push(`the server's portal table (src/portals.json) could not be read: ${error.message}`);
+    portals = [];
+  }
+  for (const entry of portals) {
+    if (hostOf(entry?.api_url) !== refusedHost) continue;
+    for (const spelling of [entry.api_url, ...(Array.isArray(entry.api_url_aliases) ? entry.api_url_aliases : [])]) {
+      const host = hostOf(spelling);
+      if (host !== null && hosts.has(host)) {
+        problems.push(
+          `the server's portal table sends the listed host ${host} to ${refusedHost}, so the refused portal ` +
+            'is reachable through a listed host: replace REFUSED_PORTAL'
+        );
+      }
+    }
+  }
+  return { problems, listed: hosts.size };
 }
 
 /**
@@ -435,6 +555,56 @@ async function attemptRefusal(refusal) {
 }
 
 /**
+ * F2: ckan_status_show on each sampled portal, in exchange 2's form. Red only
+ * when an answer carries REFUSAL_MARKER: the service refused a portal the list
+ * file lists. A portal's own failure, or no answer for one call, is reported in
+ * the summary and is not red; the exchanges before it already proved the
+ * endpoint answers.
+ */
+async function attemptSample(sample) {
+  const label = `${sample.name}: tools/call ckan_status_show`;
+  const outcomes = [];
+  const refused = [];
+  for (const [index, portal] of SAMPLED_PORTALS.entries()) {
+    const name = `${portal.id} (${hostOf(portal.url)})`;
+    let call;
+    try {
+      call = await callStatusShow(`${label} on ${portal.id}`, sample.version, index + 1, portal.url, SAMPLE_TIMEOUT_MS);
+    } catch (error) {
+      if (!(error instanceof SmokeFailure) || !error.retryable) throw error;
+      outcomes.push(`${name}: no answer, reported`);
+      log(`← ${name}: no answer, reported (${error.message})`);
+      continue;
+    }
+    const text = toolText(call.result);
+    const lines = text.split('\n').filter((line) => line.trim() !== '');
+    const head = `← 200 in ${call.round.ms}ms; ${name}`;
+    if (call.result.isError !== true) {
+      outcomes.push(`${name}: answered`);
+      log(`${head}: answered; ${lines.find((l) => l.includes(STATUS_MARKER)) ?? lines[0] ?? ''}`);
+    } else if (text.includes(REFUSAL_MARKER)) {
+      refused.push({ name, call });
+      outcomes.push(`${name}: refused by the allowlist`);
+      log(`${head}: REFUSED; ${lines.find((l) => l.includes(REFUSAL_MARKER))}`);
+    } else {
+      outcomes.push(`${name}: portal failure, reported`);
+      log(`${head}: portal failure, reported; ${lines.slice(0, 2).join(' ')}`);
+    }
+  }
+  if (refused.length > 0) {
+    throw new SmokeFailure(
+      `${label}: the service refused ${refused.map((r) => r.name).join(', ')} by its allowlist, though ` +
+        `${ALLOWED_DOMAINS_NAME} lists ${refused.length === 1 ? 'it' : 'them'}. If the refused domain in the text ` +
+        "below is the portal's own host, the service's CKAN_ALLOWED_DOMAINS is not the list file's (PIN.md, " +
+        '"The allowlist"); if it is another host, the portal redirected there, and that host belongs in the ' +
+        "list file's extra section.",
+      { detail: refused.flatMap((r) => [...r.call.round.sentDetail, ...r.call.round.receivedDetail]) }
+    );
+  }
+  return `${sample.name}: ${outcomes.join('; ')}`;
+}
+
+/**
  * The checks, in order. `sendHeader` says whether each request carries
  * MCP-Protocol-Version at the requested revision.
  */
@@ -450,6 +620,10 @@ const CHECKS = [
   {
     name: 'refused call',
     run: () => attemptRefusal({ name: 'refused call', version: PROTOCOL_VERSION }),
+  },
+  {
+    name: 'listed portals',
+    run: () => attemptSample({ name: 'listed portals', version: PROTOCOL_VERSION }),
   },
 ];
 
@@ -486,6 +660,21 @@ async function main() {
   log(`expects  : ${EXPECTED_SERVER_NAME} ${EXPECTED_SERVER_VERSION}, ${EXPECTED_TOOL_COUNT} tools`);
   log(`node     : ${process.version}`);
   log(`started  : ${new Date().toISOString()}`);
+  log(`sample   : ${[`data.boston.gov`, ...SAMPLED_PORTALS.map((p) => `${p.id} (${p.country})`)].join(', ')}`);
+  log(`refused  : ${REFUSED_PORTAL}`);
+
+  // ---- The pre-flight: before any request -----------------------------------
+  log();
+  const { problems, listed } = preflight();
+  if (problems.length > 0) {
+    log('pre-flight: FAIL; no request was sent');
+    for (const problem of problems) log(`FAIL — pre-flight: ${problem}`);
+    return 1;
+  }
+  log(
+    `pre-flight: pass (${listed} hosts in ${ALLOWED_DOMAINS_NAME}; the sample listed; ` +
+      'the refused host neither listed nor reached through src/portals.json)'
+  );
 
   const results = [];
   for (const [i, entry] of CHECKS.entries()) {
@@ -529,12 +718,24 @@ async function main() {
   return 1;
 }
 
-main()
-  .then((code) => {
-    process.exitCode = code;
-  })
-  .catch((error) => {
-    log();
-    log(`FAIL — unexpected error in the smoke itself: ${error?.stack ?? error}`);
-    process.exitCode = 1;
-  });
+function isEntryPoint() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+// Run as `node scripts/smoke-deployed-endpoint.mjs`. Imported, it sends nothing.
+if (isEntryPoint()) {
+  main()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((error) => {
+      log();
+      log(`FAIL — unexpected error in the smoke itself: ${error?.stack ?? error}`);
+      process.exitCode = 1;
+    });
+}

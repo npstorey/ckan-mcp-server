@@ -11,6 +11,12 @@ name: Pinned identity
 # WHY IT IS A pull_request CHECK, unlike the smoke: what it measures is the diff
 # itself. The service deploys `pin` on every commit, so the change has to be
 # caught before the merge.
+#
+# It also runs the tests of the fork's other scripts. The service reads the
+# allowlist file scripts/allowed-domains.txt at start, and the smoke's pre-flight
+# reads it only after a deploy, so a pull request that regenerates the file is
+# held here, before the merge, to the parser, the generator and the smoke's
+# pre-flight (PIN.md, "The allowlist"). None of them needs the network.
 
 on:
   pull_request:
@@ -44,5 +50,10 @@ jobs:
         run: npm run build
 
       # The live layer starts dist/index.js; without the build it fails, never skips.
-      - name: Pinned-values guard and the start file's test
-        run: node --test scripts/pinned-identity.test.mjs scripts/start-hosted.test.mjs
+      - name: Pinned-values guard and the fork's script tests
+        run: >-
+          node --test
+          scripts/pinned-identity.test.mjs
+          scripts/start-hosted.test.mjs
+          scripts/generate-allowed-domains.test.mjs
+          scripts/smoke-deployed-endpoint.test.mjs

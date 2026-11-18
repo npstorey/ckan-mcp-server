@@ -34,8 +34,9 @@ services:
     buildCommand: npm ci && npm run build
     # Pre-deploy command: unset in the dashboard.
     # Withholds the server's per-request log lines from the host's log stream
-    # (scripts/start-hosted.mjs; PIN.md, "Logging").
-    # The dashboard still reads `npm start` until it is edited to this command (gate G1).
+    # (PIN.md, "Logging"), and sets CKAN_ALLOWED_DOMAINS from
+    # scripts/allowed-domains.txt before it loads the server (PIN.md, "The
+    # allowlist"). Set in the dashboard on 2026-11-12.
     startCommand: node scripts/start-hosted.mjs
     # Health check path: left empty in the dashboard. The server has no GET
     # route but the OAuth discovery path, which answers 404. The scheduled
@@ -58,14 +59,21 @@ services:
       # (src/transport/http.ts), which the host cannot route to.
       - key: CKAN_HTTP_HOST
         value: 0.0.0.0
-      # The domain allowlist: the only CKAN portal the server will query. The
-      # HTTP transport refuses to start without it unless CKAN_HTTP_ALLOW_ALL
-      # is "true". The smoke checks a portal outside it is refused.
-      - key: CKAN_ALLOWED_DOMAINS
-        value: data.boston.gov
       # The DNS-rebinding guard's Host allowlist, beside the loopback
       # defaults. A host not listed here is answered 403 "Invalid Host header".
       - key: CKAN_HTTP_ALLOWED_HOSTS
         value: ckan-mcp-server.onrender.com,ckan-mcp.civicaitools.org
       # Not set in the dashboard: CKAN_HTTP_ALLOW_ALL, CKAN_PRIVATE_HOSTS
       # (new in 0.4.139; it stays unset here), PORT.
+      #
+      # CKAN_ALLOWED_DOMAINS, the CKAN allowlist, is set by the start command
+      # from scripts/allowed-domains.txt: the 1,836 hosts of the active rows of
+      # the website's CKAN directory at commit
+      # dcae97bb39f909704eed8b3e33ce51d2452e3ab0 (PIN.md, "The allowlist"). The
+      # file wins over a value set here or in the dashboard, and the start
+      # file's log line says so; none is set here. The dashboard still holds
+      # data.boston.gov until it is removed, once this deploy reads healthy.
+      # The HTTP transport refuses to start without an allowlist unless
+      # CKAN_HTTP_ALLOW_ALL is "true", and the start command refuses to start
+      # without the file. The smoke checks a portal outside the list is refused
+      # and a fixed sample inside it is not.

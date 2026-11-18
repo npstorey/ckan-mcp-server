@@ -33,24 +33,43 @@
  * (not measured). Nothing is done to stdout: the server writes nothing there
  * over HTTP (no `console.log` under src outside the Worker entry).
  *
- * This file comes out by a pin move once the upstream ships its own switch for
- * these lines (PIN.md). It imports only `node:` modules and the built server.
+ * THE ALLOWLIST. Before it loads the server, this file reads
+ * scripts/allowed-domains.txt (generated from the website's CKAN directory; see
+ * scripts/generate-allowed-domains.mjs) and sets CKAN_ALLOWED_DOMAINS from it,
+ * every host, joined by commas. The server reads the variable on every check
+ * (src/utils/http.ts, validateServerUrl). The file wins: a CKAN_ALLOWED_DOMAINS
+ * already set on the host is replaced, and one ALLOWLIST_PREFIX line says so,
+ * with the host count and the file's sha256 and no host. With the file missing,
+ * unreadable, malformed or holding no host, the server is not loaded: one
+ * ALLOWLIST_PREFIX line says so and the process exits 1.
+ *
+ * The log filter comes out by a pin move once the upstream ships its own switch
+ * for these lines (PIN.md); the allowlist stays. This file imports only `node:`
+ * modules, scripts/allowed-domains.mjs and the built server.
  */
 
-import { realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { ALLOWED_DOMAINS_NAME, ALLOWED_DOMAINS_PATH, parseAllowedDomains } from './allowed-domains.mjs';
+
+/** The prefix of this file's one allowlist line (see applyAllowedDomains). */
+export const ALLOWLIST_PREFIX = '[start-hosted] allowlist: ';
 
 /**
- * The lines passed on unchanged. Each is a prefix of one `console.error` call
- * in the pinned release (v0.4.139):
+ * The lines passed on unchanged. The first three are each a prefix of one
+ * `console.error` call in the pinned release (v0.4.139):
  *   - the start line: src/transport/http.ts:60;
  *   - the two security warnings: src/utils/http.ts:651, :669;
  *   - a failed start, before any request: src/index.ts:17, :24.
+ * The fourth is this file's own allowlist line, which holds a count, a digest
+ * and a fixed sentence, never a host.
  */
 export const KNOWN_PREFIXES = Object.freeze([
   'CKAN MCP server running on ',
   '[SECURITY WARNING] ',
   'Server error:',
+  ALLOWLIST_PREFIX,
 ]);
 
 /** What a withheld write is replaced by. Fixed: it carries nothing of the write. */
@@ -118,6 +137,50 @@ export function installHostedHandlers() {
   process.on('uncaughtException', createFatalHandler({ write: rawWrite }, (code) => process.exit(code)));
 }
 
+/** True when `value` names at least one host, as the server splits it (src/utils/http.ts). */
+function namesAHost(value) {
+  return typeof value === 'string' && value.split(',').some((part) => part.trim() !== '');
+}
+
+/**
+ * Set `env.CKAN_ALLOWED_DOMAINS` from the list file, replacing any value already
+ * there. Returns { ok, line }: `line` is the one ALLOWLIST_PREFIX line to write.
+ * When `ok` is false the variable is left as it was and the server must not be
+ * loaded. Neither line holds a host. `path` and `env` default to the real ones;
+ * the test passes its own.
+ */
+export function applyAllowedDomains({ path = ALLOWED_DOMAINS_PATH, env = process.env } = {}) {
+  const refuse = (why) => ({
+    ok: false,
+    line: `${ALLOWLIST_PREFIX}${ALLOWED_DOMAINS_NAME} ${why}; refusing to start\n`,
+  });
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return refuse('is missing or unreadable');
+  }
+  let hosts;
+  try {
+    hosts = parseAllowedDomains(text);
+  } catch (error) {
+    // The parser's message names the line's number, never its text.
+    return refuse(`is malformed (${error.message.replace(`${ALLOWED_DOMAINS_NAME} `, '')})`);
+  }
+  if (hosts.length === 0) return refuse('holds no host');
+  const replaced = namesAHost(env.CKAN_ALLOWED_DOMAINS);
+  env.CKAN_ALLOWED_DOMAINS = hosts.join(',');
+  const digest = createHash('sha256').update(text).digest('hex');
+  return {
+    ok: true,
+    line:
+      `${ALLOWLIST_PREFIX}CKAN_ALLOWED_DOMAINS set from ${ALLOWED_DOMAINS_NAME}: ${hosts.length} hosts, ` +
+      `file sha256 ${digest}` +
+      (replaced ? '; the value already set on the host is ignored' : '') +
+      '\n',
+  };
+}
+
 function isEntryPoint() {
   if (!process.argv[1]) return false;
   try {
@@ -128,10 +191,17 @@ function isEntryPoint() {
 }
 
 // Started as `node scripts/start-hosted.mjs`: the filter and the fatal handler
-// first, then the built server. src/index.ts has no main-module guard, so the
-// import starts it. Imported (the test does), this file starts nothing and
-// changes nothing.
+// first, then the allowlist from its file, then the built server. The allowlist
+// line goes through the filter, which passes it by its prefix. src/index.ts has
+// no main-module guard, so the import starts it. Imported (the test does), this
+// file starts nothing and changes nothing.
 if (isEntryPoint()) {
   installHostedHandlers();
-  await import('../dist/index.js');
+  const allowlist = applyAllowedDomains();
+  process.stderr.write(allowlist.line);
+  if (allowlist.ok) {
+    await import('../dist/index.js');
+  } else {
+    process.exitCode = 1;
+  }
 }
