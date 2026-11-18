@@ -1,10 +1,12 @@
 name: Deployed endpoint smoke
 
 # WHAT THIS WATCHES: the LIVE hosted /mcp endpoint, not the code in this repo.
-# It runs two MCP handshakes and one refused call against the running service
-# and fails if the service no longer answers as the pinned release does. See
-# scripts/smoke-deployed-endpoint.mjs for the exchanges and the assertions, and
-# PIN.md for what is pinned.
+# After a pre-flight that reads the allowlist file it checks out
+# (scripts/allowed-domains.txt) and sends nothing, it runs two MCP handshakes,
+# one refused call and a fixed sample of listed portals against the running
+# service, and fails if the service no longer answers as the pinned release
+# does or refuses a listed portal. See scripts/smoke-deployed-endpoint.mjs for
+# the exchanges and the assertions, and PIN.md for what is pinned.
 #
 # WHY IT IS NOT A push/pull_request CHECK:
 #   1. The state it measures is orthogonal to the diff, and the deploy of a
@@ -55,8 +57,9 @@ concurrency:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    # Seven requests. If they have not finished in five minutes something is
-    # wrong in a way the script's own 30s-per-request timeouts did not catch.
+    # Eleven requests. If they have not finished in five minutes something is
+    # wrong in a way the script's own per-request timeouts (30s; 45s for each
+    # of the four sampled portals) did not catch.
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4

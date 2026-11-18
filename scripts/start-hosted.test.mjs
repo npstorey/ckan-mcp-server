@@ -7,9 +7,10 @@ import assert from 'node:assert/strict';
 import { Console } from 'node:console';
 import { Writable } from 'node:stream';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   FATAL_LINE,
   KNOWN_PREFIXES,
@@ -131,8 +132,13 @@ test('the callback of a withheld write is still called', async () => {
   assert.deepEqual(written, [WITHHELD_LINE, WITHHELD_LINE]);
 });
 
-test('the known lines are exactly the three operational prefixes (an allowlist, not an audit pattern)', () => {
-  assert.deepEqual([...KNOWN_PREFIXES], ['CKAN MCP server running on ', '[SECURITY WARNING] ', 'Server error:']);
+test('the known lines are exactly the three operational prefixes and the allowlist line (an allowlist, not an audit pattern)', () => {
+  assert.deepEqual([...KNOWN_PREFIXES], [
+    'CKAN MCP server running on ',
+    '[SECURITY WARNING] ',
+    'Server error:',
+    '[start-hosted] allowlist: ',
+  ]);
   for (const prefix of KNOWN_PREFIXES) {
     assert.equal(prefix.startsWith('{'), false);
     assert.equal(prefix.startsWith('[ckan]'), false);
@@ -192,3 +198,112 @@ for (const [kind, body] of [
     }
   });
 }
+
+// The allowlist. The entry point sets CKAN_ALLOWED_DOMAINS from
+// scripts/allowed-domains.txt before it imports the server, and the file wins
+// over a value already set on the host. These cases run the entry point itself
+// in a child process: a copy of the start files in a temporary folder, beside a
+// stand-in dist/index.js that records the variable it was loaded with. No build,
+// no port, no network.
+const ALLOWLIST_PREFIX = '[start-hosted] allowlist: ';
+const SCRIPT_FILES = ['start-hosted.mjs', 'allowed-domains.mjs'];
+const LIST_HOSTS = ['a.example', 'b.example', 'data.boston.gov'];
+const LIST_TEXT = `# a comment line\n${LIST_HOSTS.join('\n')}\n`;
+
+function runEntry({ list, env = {} }) {
+  const dir = mkdtempSync(join(tmpdir(), 'start-hosted-allowlist-'));
+  try {
+    mkdirSync(join(dir, 'scripts'));
+    mkdirSync(join(dir, 'dist'));
+    writeFileSync(join(dir, 'package.json'), '{ "type": "module" }\n');
+    for (const name of SCRIPT_FILES) {
+      const from = fileURLToPath(new URL(`./${name}`, import.meta.url));
+      if (existsSync(from)) copyFileSync(from, join(dir, 'scripts', name));
+    }
+    if (list !== undefined) writeFileSync(join(dir, 'scripts', 'allowed-domains.txt'), list);
+    const seenPath = join(dir, 'loaded.json');
+    writeFileSync(
+      join(dir, 'dist', 'index.js'),
+      `import { writeFileSync } from 'node:fs';\n` +
+        `writeFileSync(${JSON.stringify(seenPath)}, JSON.stringify({ CKAN_ALLOWED_DOMAINS: process.env.CKAN_ALLOWED_DOMAINS ?? null }));\n`
+    );
+    const child = spawnSync(process.execPath, [join(dir, 'scripts', 'start-hosted.mjs')], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { PATH: process.env.PATH ?? '', ...env },
+    });
+    assert.equal(child.error, undefined, `spawn failed: ${child.error}`);
+    const loaded = existsSync(seenPath) ? JSON.parse(readFileSync(seenPath, 'utf8')) : null;
+    const lines = child.stderr.split('\n').filter((line) => line !== '');
+    return { child, loaded, lines };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The one allowlist line, holding no host from the file or the environment. */
+function assertOneAllowlistLine(lines, hidden) {
+  assert.equal(lines.length, 1, `stderr was: ${JSON.stringify(lines)}`);
+  const [line] = lines;
+  assert.ok(line.startsWith(ALLOWLIST_PREFIX), `not the allowlist line: ${JSON.stringify(line)}`);
+  assert.equal(decideStderrWrite(`${line}\n`), 'pass', 'the filter withholds the allowlist line');
+  for (const host of hidden) {
+    assert.equal(line.includes(host), false, `the line prints "${host}"`);
+  }
+  return line;
+}
+
+test('with CKAN_ALLOWED_DOMAINS also set, the file wins: the server loads with the file\'s hosts, and one known line says so, printing no host', () => {
+  const { child, loaded, lines } = runEntry({
+    list: LIST_TEXT,
+    env: { CKAN_ALLOWED_DOMAINS: 'dashboard-only.example' },
+  });
+  assert.deepEqual(loaded, { CKAN_ALLOWED_DOMAINS: LIST_HOSTS.join(',') });
+  assert.equal(child.status, 0, `exit ${child.status}`);
+  const line = assertOneAllowlistLine(lines, [...LIST_HOSTS, 'dashboard-only.example']);
+  assert.match(line, /CKAN_ALLOWED_DOMAINS/);
+  assert.match(line, /ignored/);
+  assert.match(line, /\b3 hosts\b/);
+});
+
+test('without CKAN_ALLOWED_DOMAINS, the server loads with the file\'s hosts, and one known line says where they came from', () => {
+  const { child, loaded, lines } = runEntry({ list: LIST_TEXT });
+  assert.deepEqual(loaded, { CKAN_ALLOWED_DOMAINS: LIST_HOSTS.join(',') });
+  assert.equal(child.status, 0, `exit ${child.status}`);
+  const line = assertOneAllowlistLine(lines, LIST_HOSTS);
+  assert.match(line, /\b3 hosts\b/);
+  assert.equal(/ignored/.test(line), false, 'the line says a variable was ignored when none was set');
+});
+
+for (const [name, list] of [
+  ['the file is missing', undefined],
+  ['the file holds no host', '# only comments\n\n'],
+  ['a line is not a host name', 'a.example\nhttps://secret-marker.example/path\n'],
+]) {
+  test(`when ${name}, it refuses to start: the server is never loaded, one known line says so, exit 1`, () => {
+    const { child, loaded, lines } = runEntry({ list, env: { CKAN_ALLOWED_DOMAINS: 'data.boston.gov' } });
+    assert.equal(loaded, null, 'the server was loaded');
+    assert.equal(child.status, 1, `exit ${child.status}`);
+    const line = assertOneAllowlistLine(lines, ['data.boston.gov', 'a.example', 'secret-marker']);
+    assert.match(line, /refusing to start/);
+  });
+}
+
+test('the committed list is what the entry point reads: it sets CKAN_ALLOWED_DOMAINS from it, every host once', async () => {
+  const mod = await import('./start-hosted.mjs');
+  assert.equal(typeof mod.applyAllowedDomains, 'function', 'start-hosted.mjs exports no applyAllowedDomains');
+  const env = { CKAN_ALLOWED_DOMAINS: 'data.boston.gov' };
+  const result = mod.applyAllowedDomains({ env });
+  assert.equal(result.ok, true, result.line);
+  const hosts = env.CKAN_ALLOWED_DOMAINS.split(',');
+  assert.ok(hosts.length > 1, 'the committed list holds one host or none');
+  assert.equal(new Set(hosts).size, hosts.length, 'a host is listed twice');
+  assert.ok(hosts.includes('data.boston.gov'));
+  assert.ok(result.line.startsWith(ALLOWLIST_PREFIX));
+});
+
+test('importing the file sets no variable', async () => {
+  const before = process.env.CKAN_ALLOWED_DOMAINS;
+  await import('./start-hosted.mjs');
+  assert.equal(process.env.CKAN_ALLOWED_DOMAINS, before);
+});
