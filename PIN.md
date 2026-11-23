@@ -25,13 +25,23 @@ edited, moved or deleted.
 
 | | |
 |---|---|
-| Upstream tag | `v0.4.139` |
-| Commit | `d504359397aabb233e42bc25adec54c550ed4d62` |
-| Released | `2026-11-09T10:42:32Z` (the GitHub release's publication time) |
-| `serverInfo` | `ckan-mcp-server` `0.4.139` (`src/server.ts`) |
+| Upstream tag | `v0.4.146` (tag object `7f3834146c24ce06e51a87d0f125d51b5d62b366`) |
+| Commit | `66eb95779eb5f5568cf37705a0cace557ddeb7c6` |
+| Released | `2026-11-23T08:05:13Z` (the GitHub release's publication time) |
+| `serverInfo` | `ckan-mcp-server` `0.4.146` (`src/server.ts`) |
 | MCP SDK | `@modelcontextprotocol/sdk` 1.32.2 (this fork's `package-lock.json`; the release's names 1.27.1); protocol revisions `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`, `2024-10-07` (1.32.2's `dist/esm/types.js`; 1.27.1 lists the same five) |
-| Tools | 20: 19 `ckan_*` tools and `sparql_query` |
+| Tools | 20, in list order: `ckan_package_search`, `ckan_find_relevant_datasets`, `ckan_package_show`, `ckan_list_resources`, `ckan_organization_list`, `ckan_organization_show`, `ckan_organization_search`, `ckan_datastore_search`, `ckan_datastore_search_sql`, `ckan_status_show`, `ckan_tag_list`, `ckan_group_list`, `ckan_group_show`, `ckan_group_search`, `ckan_get_mqa_quality`, `ckan_get_mqa_quality_details`, `ckan_analyze_datasets`, `ckan_catalog_stats`, `sparql_query`, `ckan_find_portals` |
 | Transport | Streamable HTTP, stateless (`src/transport/http.ts`): a server per request, no session id |
+
+**Since v0.4.139** (the previous pin; 71 upstream commits, 41 files): the same 20 tools in the same order. Two
+argument schemas moved: `ckan_datastore_search`'s `q` takes a string or an object `{"column": "word"}` (upstream #574),
+and `ckan_find_portals` takes `response_format`. `CKAN_AUDIT_LOG` (`full` by default, `minimal`, `off`) controls the
+two stderr audit lines (upstream #606, v0.4.145; see [Logging](#logging)). The SSRF guards and size caps moved from
+`src/utils/http.ts` to `src/utils/safe-http.ts` (v0.4.140, v0.4.141); `ckan_find_portals` answers from its last good
+portal list when datashades.info does not answer (v0.4.146); the rest are fixes (`sparql_query` with `#` in an IRI,
+`ckan_find_portals`'s `language` filter, a bare `*` in `ckan_package_search`), error hints, portal-table entries, and
+changes to the upstream's Cloudflare Worker, which this service does not run. The line references in the sections
+below were read at v0.4.139; except where a section says otherwise, they were not read again at this pin.
 
 ## The service
 
@@ -154,18 +164,20 @@ sampled portal fails before the merge.
 
 ## Logging
 
-**What the pinned server writes to stderr.** One JSON line per CKAN request (`auditLog`, `src/utils/http.ts:892-907`):
-`ts`, `server`, `action`, `cache_hit` and, where present, `q`, `fq`, the first 200 characters of `sql`, `id`, `rows`,
-`limit`. On a portal's `success=false`, the first 500 characters of the portal's answer (`[ckan] success=false
-action=...`, `:1149-1151`). On the host, stderr is the service's log stream, which the host keeps. No setting of the
-pinned release turns either line off.
+**What the pinned server writes to stderr.** Line references in this section were read at v0.4.146. One JSON line per
+CKAN request (`auditLog`, `src/utils/http.ts:390-409`): `ts`, `server`, `action`, `cache_hit` and, where present, `q`,
+`fq`, the first 200 characters of `sql`, `id`, `rows`, `limit`. On a portal's `success=false`, the first 500 characters
+of the portal's answer (`[ckan] success=false action=...`, `:652-658`). On the host, stderr is the service's log
+stream, which the host keeps. The pinned release ships `CKAN_AUDIT_LOG` (`src/utils/http.ts:371-375`; `full` by
+default, which writes both lines as above), and the filter below stays until the owner rules the value the hosted copy
+sets.
 
 **What `scripts/start-hosted.mjs` withholds.** It replaces `process.stderr.write` before it loads the built server
 (`dist/index.js`), and passes on unchanged only a write that begins with one of four lines, three the server writes
 itself and its own allowlist line:
 
 - `CKAN MCP server running on ` (the start line, `src/transport/http.ts:60`);
-- `[SECURITY WARNING] ` (`src/utils/http.ts:651`, `:669`);
+- `[SECURITY WARNING] ` (`src/utils/http.ts:131`, `:149`);
 - `Server error:` (a failed start, before any request, `src/index.ts:17`, `:24`);
 - `[start-hosted] allowlist: ` (the start file's own line: a host count, the file's sha256 and a fixed sentence, never
   a host; see [The allowlist](#the-allowlist)).
@@ -180,14 +192,15 @@ unhandled rejection to the same place. The file registers one `uncaughtException
 `[start-hosted] fatal error withheld; exiting`, which holds nothing of the error, and exits with code 1, as Node's own
 handler would. So uncaught exceptions and unhandled rejections are withheld the same way. Neither the pinned source nor
 its runtime dependencies register such a handler of their own (read again 2026-11-12 for the entries the lock refresh
-moved or added).
+moved or added, and 2026-11-23 for `src` at v0.4.146 and the two entries that moved again, `hono` 4.13.21 and
+`@hono/node-server` 2.1.11).
 
 **Its limits.** What the runtime prints without running JavaScript still bypasses the filter: an out-of-memory abort
 (measured: its heap report reached stderr with the filter and the handler in place) or a native crash (not measured).
 It hides nothing from the portals: each still receives every query the server sends it.
 
-**It comes out by a pin move** once the upstream ships its own switch for these lines: that pin-move PR removes the
-filter from the file. The allowlist step stays, so the start command stays `node scripts/start-hosted.mjs`.
+**It comes out** after the owner rules the hosted value of `CKAN_AUDIT_LOG`, by a later PR that removes the filter
+from the file. The allowlist step stays, so the start command stays `node scripts/start-hosted.mjs`.
 
 ## The refreshed lock
 
@@ -209,6 +222,14 @@ lock stopped moving: the second run was the last to change it, and the third gav
 enough, because the first run moves `qs` only as far as the locked `express` allows (`express` 4.22.2 declares `qs`
 `~6.15.1`, so `qs` went to 6.15.4), and the second run moves `express` to 4.22.3 and then `qs` to 6.16.2.
 
+**Redone at the move to v0.4.146.** On 2026-11-23, the same command with npm 11.19.1, over v0.4.146's `package.json`
+and `package-lock.json` (each differs from v0.4.139's only in the version), until the lock stopped moving: again the
+second run was the last to change it and the third gave a byte-equal lock. The same 13 entries changed or were added,
+none was removed, and each of the 217 development entries is byte-equal to the tag's, compared as JSON. Two entries
+resolve to newer patch releases than on 2026-11-12: `hono` 4.13.21 (was 4.13.18) and `@hono/node-server` 2.1.11 (was
+2.1.8). The lock merged from `pin` audits the same today (below), so they moved because newer releases inside the
+ranges exist, not because of a new advisory. The table's right column is this lock.
+
 `package.json` is unchanged, byte for byte. 13 lockfile entries changed, all in the runtime tree: 12 moved and 1 was
 added. No entry was removed, and no development-only entry moved: each of the 217 development entries is byte-equal to
 the release's, compared as JSON.
@@ -218,19 +239,19 @@ the release's, compared as JSON.
 | `@modelcontextprotocol/sdk` | 1.27.1 | 1.32.2 |
 | `@modelcontextprotocol/sdk/node_modules/body-parser` | 2.3.0 | 2.4.0 |
 | `@modelcontextprotocol/sdk/node_modules/qs` | (absent) | 6.17.1 |
-| `@hono/node-server` | 1.19.17 | 2.1.8 |
+| `@hono/node-server` | 1.19.17 | 2.1.11 |
 | `body-parser` | 1.20.6 | 1.20.9 |
 | `express` | 4.22.2 | 4.22.3 |
 | `fast-uri` | 3.1.7 | 3.1.9 |
 | `follow-redirects` | 1.16.0 | 1.16.3 |
-| `hono` | 4.13.7 | 4.13.18 |
+| `hono` | 4.13.7 | 4.13.21 |
 | `ip-address` | 10.7.0 | 10.7.6 |
 | `proxy-addr` | 2.0.7 | 2.0.8 |
 | `qs` | 6.15.3 | 6.16.2 |
 | `undici` | 6.28.0 | 6.29.1 |
 
 The three direct dependencies among them stay inside `package.json`'s ranges (`@modelcontextprotocol/sdk` `^1.27.1`,
-`express` `^4.19.2`, `undici` `^6.28.0`). `@hono/node-server` 2.1.8 declares `engines.node` `>=20`, above the
+`express` `^4.19.2`, `undici` `^6.28.0`). `@hono/node-server` 2.1.11 declares `engines.node` `>=20`, above the
 upstream's `>=18.17.0`; the service runs Node 22.
 
 **What this file does not record.** The build and tests on the refreshed lock, and the DNS-rebinding guard on the
@@ -245,7 +266,8 @@ database moves, and a later reading can differ.
 ### At the release's lockfile
 
 Read 2026-11-12T19:37Z over the pinned release's `package.json` and `package-lock.json`. The lockfile of `v0.4.140` gives
-the same counts.
+the same counts. Read again 2026-11-23T15:20Z over v0.4.146's: the same 11 runtime packages at the same severities,
+and the same totals over the whole tree.
 
 **19 packages flagged: 1 critical, 9 high, 9 moderate.** 11 are in the runtime tree, 8 are development-only.
 
@@ -273,7 +295,9 @@ file does not assess whether any of them is exploitable on this deployment.
 
 ### After the refresh
 
-Read 2026-11-12T22:20Z over the release's `package.json` and this fork's `package-lock.json`.
+Read 2026-11-12T22:20Z over the release's `package.json` and this fork's `package-lock.json`. Read again
+2026-11-23T15:13Z over v0.4.146's `package.json` and the lock redone that day: the same result, and the whole tree
+again 10 packages, 6 high, 4 moderate. The lock merged from `pin` before the redo reads the same runtime result.
 
 **1 runtime package flagged: `zod`, high, `GHSA-mrhx-c7xc-m3w5`; none critical.**
 
@@ -289,8 +313,8 @@ lockfile counted under the runtime `undici` row. The whole tree: 10 packages fla
 
 ## Upstream advisories
 
-The upstream's published security advisories were read 2026-11-11 (16 published) and again 2026-11-12 (still 16; the
-newest published 2026-10-19). The two newest are `GHSA-279h-fmcr-4rwv` (patched in 0.4.128) and `GHSA-w3gp-3hrh-v465`
+The upstream's published security advisories were read 2026-11-11 (16 published), again 2026-11-12 (still 16; the
+newest published 2026-10-19) and again 2026-11-23, for the move to v0.4.146 (still 16; the same newest). The two newest are `GHSA-279h-fmcr-4rwv` (patched in 0.4.128) and `GHSA-w3gp-3hrh-v465`
 (patched in 0.4.130). None lists an affected version above 0.4.129.
 
 ## Workflows
@@ -314,7 +338,7 @@ over the wire:
 
 - the website's handshake (`initialize` at `2024-11-05`, no `MCP-Protocol-Version` header) and a current client's (at
   `2025-11-25`, the header on every request), each `initialize` → `tools/list` → `tools/call ckan_status_show` on
-  `https://data.boston.gov`: the answered revision, `serverInfo` `ckan-mcp-server` `0.4.139`, exactly 20 tools, and a
+  `https://data.boston.gov`: the answered revision, `serverInfo` `ckan-mcp-server` `0.4.146`, exactly 20 tools, and a
   status answer;
 - one refused call (F1): `ckan_status_show` on `https://bdap-opendata.rgs.mef.gov.it/SpodCkanApi`, a CKAN portal in
   the server's portal table whose host the list does not hold, must come back `isError: true`, naming
@@ -348,7 +372,8 @@ branch of this fork.
 The pin moves to the newest upstream release after that release's advisories (the upstream's, and `npm audit` over its
 lockfile) are read. The move is a PR on `pin` that merges the upstream tag and touches only upstream files (with
 `package-lock.json` refreshed as below), plus this file, the smoke's pinned version (`EXPECTED_SERVER_VERSION` in
-`scripts/smoke-deployed-endpoint.mjs`, and `EXPECTED_TOOL_COUNT` beside it when a release changes the tool count) and
+`scripts/smoke-deployed-endpoint.mjs`, and `EXPECTED_TOOL_COUNT` beside it when a release changes the tool count, with
+the version the stand-in in `scripts/smoke-deployed-endpoint.test.mjs` reports, which moves with it) and
 `scripts/pinned-identity.json`. Edit `scripts/pinned-identity.json` only after the site accepts the new values (see
 "The staged order" below). The fork merges by merge commit only.
 
