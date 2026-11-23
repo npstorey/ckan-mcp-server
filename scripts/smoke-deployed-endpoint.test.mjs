@@ -44,7 +44,7 @@ function result(message) {
     return {
       protocolVersion: message.params.protocolVersion,
       capabilities: { tools: {} },
-      serverInfo: { name: 'ckan-mcp-server', version: '0.4.139' },
+      serverInfo: { name: 'ckan-mcp-server', version: '0.4.146' },
     };
   }
   if (message.method === 'tools/list') {
