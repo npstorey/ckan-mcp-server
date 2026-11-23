@@ -101,7 +101,7 @@ const APP_PROTOCOL_VERSION = '2024-11-05';
  * version, and the smoke at that PR's head is green only after its deploy.
  */
 const EXPECTED_SERVER_NAME = 'ckan-mcp-server';
-const EXPECTED_SERVER_VERSION = '0.4.139';
+const EXPECTED_SERVER_VERSION = '0.4.146';
 
 /** Tools the pinned release registers: 19 `ckan_*` tools and `sparql_query`. */
 const EXPECTED_TOOL_COUNT = 20;

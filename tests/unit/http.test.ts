@@ -499,6 +499,30 @@ describe('makeCkanRequest', () => {
         });
       });
 
+      it('real axios: the agents let a listed host name resolve to loopback, reading the list at lookup time', async () => {
+        process.env.CKAN_PRIVATE_HOSTS = 'localhost';
+        const config = await getRequestConfig('http://localhost:5003');
+        const realAxios = (await vi.importActual<typeof import('axios')>('axios')).default;
+        const http = await import('node:http');
+        let hits = 0;
+        const server = http.createServer((_req, res) => { hits++; res.end('{"success":true,"result":"INTERNAL"}'); });
+        await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+        const url = `http://localhost:${(server.address() as AddressInfo).port}/`;
+        try {
+          // `localhost` goes through the agents' DNS lookup (an IP literal would skip it);
+          // family 4 keeps it on the IPv4 listener.
+          const res = await realAxios.get(url, { ...config, family: 4 });
+          expect(res.status).toBe(200);
+          expect(hits).toBe(1);
+          // Same agents, list changed: the lookup reads it again and now refuses.
+          process.env.CKAN_PRIVATE_HOSTS = 'ckan.intra.example';
+          await expect(realAxios.get(url, { ...config, family: 4 })).rejects.toThrow(/private|internal/i);
+          expect(hits).toBe(1);
+        } finally {
+          await new Promise<void>(resolve => server.close(() => resolve()));
+        }
+      });
+
       it('real axios: a listed host that redirects to the metadata address is refused', async () => {
         process.env.CKAN_PRIVATE_HOSTS = '127.0.0.1,169.254.169.254';
         const config = await getRequestConfig('http://127.0.0.1');
@@ -1052,9 +1076,17 @@ describe('validateServerUrl — CKAN_ALLOWED_DOMAINS', () => {
 });
 
 describe('audit logging', () => {
+  // These tests expect the default (full) line, whatever CKAN_AUDIT_LOG the caller set.
+  const origAuditLog = process.env.CKAN_AUDIT_LOG;
+
   beforeEach(() => {
     vi.clearAllMocks();
     __resetCacheForTests();
+    delete process.env.CKAN_AUDIT_LOG;
+  });
+
+  afterEach(() => {
+    if (origAuditLog === undefined) delete process.env.CKAN_AUDIT_LOG; else process.env.CKAN_AUDIT_LOG = origAuditLog;
   });
 
   it('writes JSON log to stderr after successful HTTP request', async () => {
@@ -1123,6 +1155,22 @@ describe('formatCkanError', () => {
       expect(result).not.toContain('retry later');
       expect(result).not.toContain('ckan_package_search');
     }
+  });
+
+  it('data.europa.eu gets the not-CKAN notice on 404 and on success=false', () => {
+    const notFound = new CkanApiError('CKAN API error (404): Not Found', 404, 'package_search', 'https://data.europa.eu/data');
+    const noSuccess = new CkanApiError('CKAN API returned success=false for action "package_search".', undefined, 'package_search', 'https://data.europa.eu/euodp/en/data/');
+    for (const err of [notFound, noSuccess]) {
+      const result = formatCkanError(err, 'ckan_package_search');
+      expect(result).toContain('not a CKAN portal');
+      expect(result).toContain('sparql_query');
+    }
+  });
+
+  it('a plain error mentioning data.europa.eu (MQA path) keeps its own message', () => {
+    // MQA calls data.europa.eu through safeFetch, which throws plain Errors: no notice.
+    const result = formatCkanError(new Error('MQA API error: Network error'), 'ckan_get_mqa_quality');
+    expect(result).toBe('MQA API error: Network error');
   });
 
   it('a working portal keeps the status-based hint', () => {
@@ -1371,6 +1419,8 @@ describe('formatCkanError', () => {
       expect(err).toBeInstanceOf(CkanApiError);
       expect(err.message).toBe('CKAN API error (403): Not authorized to call function NULLIF');
       expect(formatCkanError(err, 'ckan_datastore_search_sql')).toContain('not permitted on this portal');
+      // CAST is the function agents hit most (telemetry 2026-11-10); `::` is not a call.
+      expect(formatCkanError(err, 'ckan_datastore_search_sql')).toContain('"col"::float');
       // The telemetry classifies on the whole text: the hint must not read as `not_allowed`.
       expect(summarizeToolError(formatCkanError(err, 'ckan_datastore_search_sql')).error_kind).toBe('upstream_http');
     } finally {
@@ -1446,6 +1496,23 @@ describe('formatCkanError', () => {
     const text = formatCkanError(err, 'ckan_datastore_search_sql');
     expect(text).toContain('SQL');
     expect(text).not.toContain('parameters may conflict');
+  });
+
+  it.each([
+    ['unquoted capital letters', '(psycopg2.errors.UndefinedColumn) column "sezione" does not exist'],
+    ['unquoted spaces', '(psycopg2.errors.SyntaxError) syntax error at or near "struttura"']
+  ])('409 on datastore_search_sql with %s tells to double-quote column names', (_label, reason) => {
+    const err = new CkanApiError(`CKAN API error (409): query: ${reason}`, 409, 'datastore_search_sql', undefined, `query: ${reason}`);
+    const text = formatCkanError(err, 'ckan_datastore_search_sql');
+    expect(text).toContain('must be in double quotes');
+    expect(text).toContain('limit: 0');
+  });
+
+  it('409 on datastore_search_sql for another reason keeps the generic SQL hint', () => {
+    const err = new CkanApiError('CKAN API error (409): query: permission denied for relation x', 409, 'datastore_search_sql', undefined, 'query: permission denied for relation x');
+    const text = formatCkanError(err, 'ckan_datastore_search_sql');
+    expect(text).toContain('The portal rejected the SQL');
+    expect(text).not.toContain('double quotes');
   });
 
   it('500 mentions portal internal error', () => {

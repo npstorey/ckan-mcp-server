@@ -1,5 +1,99 @@
 # LOG
 
+## 2026-11-23
+
+### v0.4.146
+
+Ships #611. For callers: when datashades.info does not answer, `ckan_find_portals` answers from the last good portal list (up to 7 days old) with the line "portal list from <date>, datashades.info did not answer" (`note` in JSON), instead of failing; concurrent calls share one download of the 22 MB registry. Released the same day as the merge and as v0.4.145, by explicit decision (exception to the release cadence rule). Gate: tests 792 passed, smoke 18/18.
+
+### #611 merged: last good portal list (closes #610)
+
+By effectustasi. `ckan_find_portals` keeps a second cache entry (`datashades-portal-list-last-good-v1`, 7 days) and serves it, with the line "portal list from <date>, datashades.info did not answer", when a refresh fails; concurrent calls share one refresh. Greptile P1 confirmed and fixed on the branch (`7e30e43`): a 200 without a `portals` array, or with no active portal, now throws instead of overwriting the last good copy with an empty list (3 tests, failing without the fix). Squash-merged as `856e8ce`; on main tests 792 passed. Not released. Open from #610: after deploy, check on the Worker that the 7-day entry survives across isolates, and a live check.
+
+### v0.4.145
+
+Ships #603, #606, #607, #608, #609. For callers: `CKAN_AUDIT_LOG` (`full` default, `minimal`, `off`) trims or turns off the stderr audit lines, by Nathan Storey (#606, closes #602); `ckan_datastore_search` accepts a column-scoped `q` object and hints at it on the full-text row limit (#603); a DataStore SQL error on an unquoted column says to double-quote it, and a bare `*` in package search becomes `*:*` (#608); the hosted Worker sends fair-use `instructions` (#607) and limits `/mcp` to 200 requests per minute per IP (#609). Released the same day as the #606 merge, by explicit decision (exception to the release cadence rule), since Nathan moves his pin to it. #611 (last good portal list) not included. Gate: tests 786 passed, smoke 18/18. Live: npm `latest` 0.4.145 with provenance, GitHub release (DXT + skill), Worker `/health` 0.4.145 (version `e9767a47`, rate limit binding listed), MCP Registry `isLatest` 0.4.145.
+
+### #606 merged (`CKAN_AUDIT_LOG`)
+
+Checked on the branch at `dbdd526` before merge: build ok, tests 786 passed; Node HTTP against dati.gov.it with `server_url` `https://user:pass@www.dati.gov.it/opendata?x=segreto#frag`: `full` logs the URL as given with `q`, `minimal` logs `https://www.dati.gov.it/opendata` without `q`, `off` writes no line. The `success=false` line was not seen live (dati.gov.it answers 404 for a missing dataset), only in unit tests. Greptile re-review on `dbdd526`: no findings. Both Copilot threads answered and resolved. 17 `claude.yml` runs awaiting approval (fork PR events, job would skip without `@claude`) deleted. Squash-merged as `63deb9b`.
+
+## 2026-11-21
+
+### Next release waits for #606
+
+No release today (one-day rule, #608 merged today). v0.4.145 goes out after #606 (`CKAN_AUDIT_LOG`, Nathan Storey) is merged, with #603 and #608: Nathan moves his pinned copy to the release that carries the setting.
+
+### Hosted endpoint: per-IP rate limit
+
+`/mcp` on the Worker now allows 200 requests per minute per IP (`CF-Connecting-IP`), through the Workers Rate Limiting binding (`[[ratelimits]]` `MCP_RATE_LIMITER` in `wrangler.toml`); beyond that it answers HTTP 429 with a JSON-RPC error that points to a local install or the CKAN API. Fails open if the binding is missing or throws. Threshold from the Observability API, 2026-11-14/21, ~138k requests counted per IP per minute: assistants peaked at 105 (Claude Desktop), claude.ai connectors at 14 per IP over 97 IPs; abuse at 465 (`curl` script), 764 (daily scanner) and 3,620 (the 2026-11-20 scraper). Count is approximate and per Cloudflare location. Tests: `tests/integration/worker-rate-limit.test.ts` (4). `wrangler dev`: 210 requests from one IP → 200 ok, 10 × 429; another IP still 200. README fair-use paragraph mentions the limit. Deployed (version `42cba9f5`): the deploy lists `env.MCP_RATE_LIMITER (200 requests/60s)`, so the free plan has the binding. Live: 300 parallel requests in 3 s all passed; a following 800 in 13 s gave 563 × 200 and 237 × 429, so the count lags and a burst can pass well over 200 before it bites (Cloudflare: counts are eventually consistent). Also live: `q: "*"` on dati.gov.it 74,694 results, the SQL quoting hint on dati.regione.umbria.it.
+
+### SQL column quoting hint, bare `*` in package search
+
+From Worker telemetry (2026-11-18/21). `ckan_datastore_search_sql`: a 409 whose reason is `UndefinedColumn` or a syntax error now says to double-quote column names with capitals, spaces or accents, and to read the exact names with `limit: 0`; 23 such errors in three days, almost all unquoted columns (`SELECT Comune`, `SELECT Luogo di nascita`). The tool description says it too. `ckan_package_search`: `q` of `*` or empty becomes `*:*` (`normalizeMatchAll`), since a bare `*` returns 0 on CKAN (dati.gov.it, open.canada.ca, datos.gob.cl). Tests 770 passed. Live with Node HTTP: `q: "*"` on dati.gov.it 74,694 results (was 0); unquoted `Sezione` and `Denominazione struttura` on dati.regione.umbria.it get the new hint, quoted `"Sezione"` answers.
+
+### Hosted endpoint: fair-use MCP instructions
+
+The Worker now sends MCP `instructions` at initialize (`HOSTED_ENDPOINT_INSTRUCTIONS` in `src/server.ts`, passed by `src/worker.ts` to `createServer`): shared instance for interactive use, no bulk downloads, catalog crawling or parallel batches, suggest a local install or the CKAN API for bulk access. stdio and Node HTTP send none. It is advice to the model, not a limit: a script like the 2026-11-20 one ignores it. Tests 757 passed (2 new in `tests/unit/server-instructions.test.ts`). Checked with `wrangler dev` (instructions present, search still answers) and Node HTTP (`instructions` null).
+
+### Hosted endpoint: fair-use note
+
+On 2026-11-20, 13:30-16:37 UTC, one client (`Go-http-client/2.0`, a single residential network) crawled dati.puglia.it through the public Worker: in about 40 seconds, 1,317 `ckan_datastore_search` and 608 `ckan_list_resources` calls, one resource or dataset each. 1,466 requests hit the free-plan CPU limit (10-14 ms each), and Cloudflare sent the "CPU time limit" email. None since then (Observability API, last 48 h). README and `.readme-npm.md` now say the hosted endpoint is for trying the server and interactive use, not bulk work. Open: the archive has no tool calls for 13-16 UTC that day although the API shows successful requests from the same client, to check in the archiver.
+
+## 2026-11-18
+
+### Issue #574: column-scoped `q` in `ckan_datastore_search`
+
+The portal's error message already reached the caller since #578 (existing tests on axios and fetch green). New: `q` also accepts an object `{"column": "word"}`, sent to CKAN as JSON, which restricts full-text search to one column; when a portal answers 409 "Full text search is not supported" (open.canada.ca, ckanext-canada row limit) the hint suggests that form first, then `filters` or SQL `ILIKE`. Tests 755 passed (3 new in `tests/integration/datastore-q-column.test.ts`). Live on open.canada.ca resource `027ee7f8-...`, Node HTTP and `wrangler dev`: string `q` → 409 with message and new hint; column `q` → 31,481 records.
+
+## 2026-11-17
+
+### v0.4.144
+
+Ships #600. For callers: a CKAN tool pointed at data.europa.eu (any of its URLs) now says it is not a CKAN portal and to use `sparql_query` on `https://data.europa.eu/sparql`, instead of a bare 404; `ckan_find_portals` accepts `response_format: "json"`. Released the same day as the change, by explicit decision (exception to "Release Cadence"). Tests 752 passed, smoke 18/18. Live: npm `latest` 0.4.144 with provenance, MCP Registry `isLatest`, GitHub release (DXT + skill), Worker `/health` 0.4.144; on the public Worker `https://data.europa.eu/data` returns the not-CKAN notice and `ckan_find_portals` returns JSON.
+
+### Worker telemetry: data.europa.eu, find_portals response_format
+
+From telemetry 2026-11-13/17 (1,638 calls, 135 errors). `src/portals.json` marks data.europa.eu as not CKAN (`migrated` notice): CKAN tools on any of its URLs now say so and point to `sparql_query` with `endpoint_url https://data.europa.eu/sparql`, instead of a bare 404 or `success=false` (15+ failures). `ckan_find_portals` accepts `response_format` (`json` returns `{portals}`, errors stay JSON); it was the only tool without it, and 2 calls were rejected. Tests 752 passed, smoke 18/18 (17/18 on a first run, not reproduced); e2e on Node HTTP and `wrangler dev`.
+
+## 2026-11-15
+
+### v0.4.143
+
+Ships #598. For callers: `ckan_find_portals` accepts a `language` filter again (it failed for every language); data.gov.au works through any of its URLs, and Data.NSW (`data.nsw.gov.au`) is configured; "Full JSON metadata" links and `api_json_url` point at the API the request really used. Tests 743 passed, smoke 18/18. Live: npm `latest` 0.4.143 with SLSA provenance, MCP Registry `isLatest`, GitHub release (DXT + skill), Worker `/health` 0.4.143; on the public Worker `language: "it"` lists portals and `https://data.gov.au` returns 908 results for `bushfire`.
+
+### find_portals language filter, data.gov.au API path
+
+From the Worker telemetry (2026-11-12 to 2026-11-15, ~900 calls), each reproduced live. `ckan_find_portals` failed on every `language` filter with `Cannot read properties of null (reading 'toLowerCase')`, reported as "Could not fetch portal list": 3 of 945 active datashades.info portals have no `locale_default`; the filters now read null fields as empty. data.gov.au was unreachable through any URL: requests are routed by hostname and `portals.json` pointed at `https://data.gov.au`, whose `/api/3` answers 404; the API is under `/data` (6 failed calls by one client on 2026-11-14). `api_url` is now `https://data.gov.au/data`, and Data.NSW (`data.nsw.gov.au/data`) is added. The "Full JSON metadata" links and `api_json_url` are built on the routed base (`getPortalActionBase`), so `https://data.gov.au` no longer links a 404. Tests 743 passed; HTTP e2e on Node and `wrangler dev`.
+
+## 2026-11-12
+
+### v0.4.142
+
+Ships #596. For callers: no change to tools, inputs, outputs or limits. A real Axios regression test now checks that `CKAN_PRIVATE_HOSTS` reaches the agents' DNS lookup and that changing the list takes effect on the next lookup. A redundant local variable was removed. Maintenance-only release, published the same day as the change as an explicit exception requested by the maintainer. Gate: tests 739 passed, 6 skipped; smoke 18/18; built Node HTTP server returned a live dataset search on dati.gov.it.
+
+### v0.4.141
+
+Ships #593 and #594. For callers: `sparql_query` accepts a one-line SELECT whose IRIs contain `#` (e.g. `PREFIX rdfs: <...rdf-schema#> SELECT ...`, refused before as "Only SELECT queries"); a failed query reports the endpoint's own reason instead of a bare `Bad Request`, and a timeout says so; the DataStore SQL 403 hint suggests `"col"::float` instead of `CAST`. #594 is internal, no change for callers. Released the same day as #593, as an explicit exception to the release cadence rule, at the maintainer's request. Gate: tests 738 passed, smoke 18/18.
+
+### safe-http.ts reads no configuration (#594)
+
+Second and last step of path B (#590), by @bjornhagstrom; further steps declined in #590. `src/utils/safe-http.ts` no longer reads `process.env` or names CKAN: `http.ts` reads the `CKAN_*` settings (size caps at load, the rest per call, per redirect hop, per DNS lookup, as before) and passes them in; same 20 exports from `utils/http.js`, same messages, no test changed. `warnIfPrivateHostsOverHttp` and `assertHttpAllowlistConfigured` move verbatim to `http.ts`. No behaviour change, not yet released. Checked after merge with #593: build and Worker build ok, tests 738 passed, 6 skipped.
+
+### SPARQL validation, endpoint errors, CAST hint
+
+From the Worker telemetry (2026-11-09 to 2026-11-12), each reproduced live. `sparql_query` no longer reads a `#` inside an IRI or string as a comment: `PREFIX rdfs: <...rdf-schema#> SELECT ...` on one line was refused as "Only SELECT queries" (10 Wikidata calls). A failed query now carries the endpoint's own reason, read from the first 4 KB of the body (Wikidata `Encountered "(" at line 1, column 68.`, Virtuoso `syntax error at '(' ...`) instead of a bare `Bad Request`; HTML pages are left out. A timeout says so instead of "The operation was aborted", and the telemetry files both under `timeout` and `upstream_http` rather than `other`. The DataStore SQL 403 hint names `"col"::float` for `CAST` (Québec: `::` 36 rows, `CAST` 403). Tests 736 passed; HTTP e2e on Node and `wrangler dev`.
+
+### v0.4.140
+
+Ships #591. For callers: nothing changes - same tools, inputs, outputs and limits. Internal only: the SSRF guards and size caps now live in `src/utils/safe-http.ts`, separate from the CKAN client. Released at the maintainer's request. Gate: tests 726 passed, smoke 18/18; HTTP e2e on Node and `wrangler dev` (live calls ok, private IPs and off-allowlist hosts refused).
+
+## 2026-11-11
+
+### Split HTTP safety out of utils/http.ts (#591)
+
+First step of path B (#590), by @bjornhagstrom. SSRF guards, response and decompression size caps and `safeFetch` move verbatim to the new `src/utils/safe-http.ts`; `http.ts` keeps the CKAN-specific part (`makeCkanRequest`, errors, audit log, cache) and re-exports the moved names, so no import changes. No behaviour change, not yet released. Checked after merge: `--color-moved` shows only import/re-export lines, a header comment and four added `export`; build ok, tests 726 passed, 6 skipped.
+
 ## 2026-11-09
 
 ### v0.4.139
